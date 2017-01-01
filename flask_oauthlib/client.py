@@ -11,6 +11,7 @@
 import logging
 import oauthlib.oauth1
 import oauthlib.oauth2
+import requests
 from copy import copy
 from functools import wraps
 from oauthlib.common import to_unicode, PY3, add_params_to_uri
@@ -169,7 +170,7 @@ class OAuthResponse(object):
     @property
     def status(self):
         """The status code of the response."""
-        return self._resp.code
+        return self._resp.status_code
 
 
 class OAuthException(RuntimeError):
@@ -235,6 +236,7 @@ class OAuthRemoteApp(object):
         content_type=None,
         app_key=None,
         encoding='utf-8',
+        proxies=None,
     ):
         self.oauth = oauth
         self.name = name
@@ -255,6 +257,8 @@ class OAuthRemoteApp(object):
 
         self.app_key = app_key
         self.encoding = encoding
+
+        self._proxies=proxies
 
         # Check for required authentication information.
         # Skip this check if app_key is specified, since the information is
@@ -364,23 +368,17 @@ class OAuthRemoteApp(object):
         return client
 
     @staticmethod
-    def http_request(uri, headers=None, data=None, method=None):
+    def http_request(uri, headers=None, data=None, method=None,proxies=None):
         uri, headers, data, method = prepare_request(
             uri, headers, data, method
         )
 
-        log.debug('Request %r with %r method' % (uri, method))
-        req = http.Request(uri, headers=headers, data=data)
-        req.get_method = lambda: method.upper()
-        try:
-            resp = http.urlopen(req)
-            content = resp.read()
-            resp.close()
-            return resp, content
-        except http.HTTPError as resp:
-            content = resp.read()
-            resp.close()
-            return resp, content
+        log.debug('Request %r with %r method' , uri, method)
+        # TODO: handle exception
+        resp = requests.request(method,uri,headers=headers,data=data, proxies=proxies)
+        content = resp.text
+        log.debug('response : %s, %s', resp.status_code, content)
+        return resp, content
 
     def get(self, *args, **kwargs):
         """Sends a ``GET`` request. Accepts the same parameters as
@@ -473,7 +471,7 @@ class OAuthRemoteApp(object):
         else:
             data = None
         resp, content = self.http_request(
-            uri, headers, data=to_bytes(body, self.encoding), method=method
+            uri, headers, data=to_bytes(body, self.encoding), method=method, proxies=self._proxies
         )
         return OAuthResponse(resp, content, self.content_type)
 
@@ -562,7 +560,7 @@ class OAuthRemoteApp(object):
         )
         log.debug('Generate request token header %r', headers)
         resp, content = self.http_request(
-            uri, headers, method=self.request_token_method,
+            uri, headers, method=self.request_token_method, proxies=self._proxies
         )
         data = parse_response(resp, content)
         if not data:
@@ -570,7 +568,7 @@ class OAuthRemoteApp(object):
                 'Invalid token response from %s' % self.name,
                 type='token_generation_failed'
             )
-        if resp.code not in (200, 201):
+        if resp.status_code not in (200, 201):
             message = 'Failed to generate request token'
             if 'oauth_problem' in data:
                 message += ' (%s)' % data['oauth_problem']
@@ -611,10 +609,11 @@ class OAuthRemoteApp(object):
 
         resp, content = self.http_request(
             uri, headers, to_bytes(data, self.encoding),
-            method=self.access_token_method
+            method=self.access_token_method,
+            proxies=self._proxies
         )
         data = parse_response(resp, content)
-        if resp.code not in (200, 201):
+        if resp.status_code not in (200, 201):
             raise OAuthException(
                 'Invalid response from %s' % self.name,
                 type='invalid_response', data=data
@@ -641,6 +640,7 @@ class OAuthRemoteApp(object):
                 headers=headers,
                 data=to_bytes(body, self.encoding),
                 method=self.access_token_method,
+                proxies=self._proxies
             )
         elif self.access_token_method == 'GET':
             qs = client.prepare_request_body(**remote_args)
@@ -650,6 +650,7 @@ class OAuthRemoteApp(object):
                 url,
                 headers=headers,
                 method=self.access_token_method,
+                proxies=self._proxies
             )
         else:
             raise OAuthException(
@@ -658,7 +659,7 @@ class OAuthRemoteApp(object):
             )
 
         data = parse_response(resp, content, content_type=self.content_type)
-        if resp.code not in (200, 201):
+        if resp.status_code not in (200, 201):
             raise OAuthException(
                 'Invalid response from %s' % self.name,
                 type='invalid_response', data=data
